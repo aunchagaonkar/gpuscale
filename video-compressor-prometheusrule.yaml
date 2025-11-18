@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+  name: video-compressor-rule
+spec:
+  groups:
+  - name: gpu-rule-group
+    interval: 5s
+    rules:
+    - record: video_compressor_gpu_avg
+      expr: avg(dcgm_enc_utilization{node="minikube"})
+      labels:
+        namespace: default
+        deployment: video-compressor

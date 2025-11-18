@@ -1,0 +1,15 @@
+prometheus:
+  url: http://kube-prometheus-stack-prometheus.default.svc.cluster.local
+
+rules:
+  default: false
+  custom:
+  - seriesQuery: '{__name__=~"^video_compressor_gpu_avg"}'
+    resources:
+      overrides:
+        namespace: {resource: "namespace"}
+        deployment: {resource: "deployment"}
+    name:
+      matches: "^(.*)"
+      as: "${1}"
+    metricsQuery: 'avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'

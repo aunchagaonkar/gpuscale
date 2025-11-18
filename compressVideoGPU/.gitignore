@@ -1,0 +1,52 @@
+# Binaries
+go/hello_gpu/hello_gpu
+backend/server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+input.*
+output.*
+
+# Go
+*.test
+*.out
+go.sum
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Docker
+uploads/
+static/
+
+# Environment
+.env.local

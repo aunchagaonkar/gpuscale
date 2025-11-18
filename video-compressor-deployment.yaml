@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-compressor
+  labels:
+    app: video-compressor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: video-compressor
+  template:
+    metadata:
+      labels:
+        app: video-compressor
+    spec:
+      containers:
+      - name: video-compressor-main
+        image: "docker.io/aunchagaonkar/video-compressor"
+        ports:
+        - containerPort: 8080
+        env:
+        - name: POD_NAME # Expose pod name to the application
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        resources:
+          limits:
+            nvidia.com/gpu: 1 # Each pod requests one (time-sliced) GPU
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-compressor-svc
+spec:
+  selector:
+    app: video-compressor
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer # LoadBalancer for external access and traffic distribution
