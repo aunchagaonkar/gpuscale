@@ -21,7 +21,7 @@ spec:
         name: video-compressor
       target:
         type: Value
-        value: "50"
+        value: "30"
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0

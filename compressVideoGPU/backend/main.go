@@ -1,13 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,16 +21,38 @@ const (
 	uploadDir   = "./uploads"
 	staticDir   = "./static"
 	frontendDir = "./frontend/dist"
-	maxFileSize = 500 * 1024 * 1024 // 500MB max file size
+	maxFileSize = 500 * 1024 * 1024
 )
 
-// Job status tracking
+type VideoMetrics struct {
+	Width        int               `json:"width"`
+	Height       int               `json:"height"`
+	Duration     float64           `json:"duration"`
+	VideoCodec   string            `json:"videoCodec"`
+	AudioCodec   string            `json:"audioCodec"`
+	FrameRate    string            `json:"frameRate"`
+	Bitrate      int64             `json:"bitrate"`
+	VideoBitrate int64             `json:"videoBitrate"`
+	AudioBitrate int64             `json:"audioBitrate"`
+	Size         int64             `json:"size"`
+	PixelFormat  string            `json:"pixelFormat"`
+	ColorSpace   string            `json:"colorSpace"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+type ComparisonMetrics struct {
+	Original         VideoMetrics `json:"original"`
+	Compressed       VideoMetrics `json:"compressed"`
+	CompressionRatio string       `json:"compressionRatio"`
+	ProcessingTime   string       `json:"processingTime,omitempty"`
+}
+
 var (
-	jobStatus = make(map[string]string)
-	jobMutex  sync.RWMutex
+	jobStatus  = make(map[string]string)
+	jobMetrics = make(map[string]*ComparisonMetrics)
+	jobMutex   sync.RWMutex
 )
 
-// CORS middleware to allow frontend requests
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -44,42 +70,34 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 func main() {
-	// Create required directories
+
 	for _, dir := range []string{uploadDir, staticDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Fatalf("Failed to create directory %s: %v", dir, err)
 		}
 	}
 
-	// Set Gin to release mode (can change to debug for development)
 	gin.SetMode(gin.ReleaseMode)
 
-	// Initialize Gin router
 	router := gin.Default()
 
-	// Enable CORS for frontend
 	router.Use(corsMiddleware())
 
-	// Set max multipart memory (32MB in memory, rest on disk)
 	router.MaxMultipartMemory = 32 << 20
 
-	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
 			"service": "GPU Video Compressor API",
-			"podName": os.Getenv("POD_NAME"), // Read pod name from env
+			"podName": os.Getenv("POD_NAME"),
 		})
 	})
 
-	// Serve static files (compressed videos)
 	router.Static("/static", staticDir)
 
-	// API endpoints
 	router.POST("/upload", handleUpload)
 	router.GET("/status/:jobID", handleStatus)
 
-	// Serve frontend static files (if exists)
 	if _, err := os.Stat(frontendDir); err == nil {
 		router.Static("/assets", filepath.Join(frontendDir, "assets"))
 		router.NoRoute(func(c *gin.Context) {
@@ -87,14 +105,13 @@ func main() {
 		})
 	}
 
-	// Start server
 	port := "8080"
-	fmt.Printf("🚀 Server starting on http://localhost:%s\n", port)
-	fmt.Printf("📁 Upload directory: %s\n", uploadDir)
-	fmt.Printf("📦 Static directory: %s\n", staticDir)
-	fmt.Println("✓ Ready to accept file uploads at POST /upload")
-	fmt.Println("✓ Status endpoint available at GET /status/:jobID")
-	fmt.Println("✓ Compressed files served at /static/:filename")
+	fmt.Printf(" Server starting on http://localhost:%s\n", port)
+	fmt.Printf(" Upload directory: %s\n", uploadDir)
+	fmt.Printf(" Static directory: %s\n", staticDir)
+	fmt.Println(" Ready to accept file uploads at POST /upload")
+	fmt.Println(" Status endpoint available at GET /status/:jobID")
+	fmt.Println(" Compressed files served at /static/:filename")
 
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
@@ -102,7 +119,7 @@ func main() {
 }
 
 func handleUpload(c *gin.Context) {
-	// Get the file from the request
+
 	file, err := c.FormFile("video")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -112,7 +129,6 @@ func handleUpload(c *gin.Context) {
 		return
 	}
 
-	// Check file size
 	if file.Size > maxFileSize {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("File too large. Maximum size is %dMB", maxFileSize/(1024*1024)),
@@ -120,16 +136,13 @@ func handleUpload(c *gin.Context) {
 		return
 	}
 
-	// Generate unique job ID
 	jobID := uuid.New().String()
 
-	// Get file extension
 	ext := filepath.Ext(file.Filename)
 	if ext == "" {
-		ext = ".mp4" // default extension
+		ext = ".mp4"
 	}
 
-	// Save file with job ID
 	inputPath := filepath.Join(uploadDir, fmt.Sprintf("%s_input%s", jobID, ext))
 	if err := c.SaveUploadedFile(file, inputPath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -141,13 +154,10 @@ func handleUpload(c *gin.Context) {
 
 	log.Printf("File uploaded: Job ID=%s, File=%s (%.2f MB)", jobID, file.Filename, float64(file.Size)/(1024*1024))
 
-	// Set initial job status
 	setJobStatus(jobID, "processing")
 
-	// Start compression in goroutine
 	go compressVideo(jobID, inputPath)
 
-	// Return job ID immediately
 	c.JSON(http.StatusOK, gin.H{
 		"jobID":    jobID,
 		"message":  "File uploaded successfully. Compression started.",
@@ -172,9 +182,13 @@ func handleStatus(c *gin.Context) {
 		"status": status,
 	}
 
-	// If complete, include download URL
 	if status == "complete" {
 		response["downloadURL"] = fmt.Sprintf("/static/%s_output.mp4", jobID)
+
+		metrics := getJobMetrics(jobID)
+		if metrics != nil {
+			response["metrics"] = metrics
+		}
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -182,25 +196,29 @@ func handleStatus(c *gin.Context) {
 
 func compressVideo(jobID, inputPath string) {
 	log.Printf("Starting GPU compression for job %s", jobID)
+	startTime := time.Now()
 
-	// Output path in static directory
 	outputPath := filepath.Join(staticDir, fmt.Sprintf("%s_output.mp4", jobID))
 
-	// Build ffmpeg command with GPU acceleration (NVENC)
-	// CPU decoding + GPU encoding (more compatible)
+	originalMetrics, err := getVideoMetrics(inputPath)
+	if err != nil {
+		log.Printf("Failed to get original video metrics for job %s: %v", jobID, err)
+		setJobStatus(jobID, "failed")
+		return
+	}
+
 	cmd := exec.Command(
 		"ffmpeg",
-		"-y",            // Overwrite output file
-		"-i", inputPath, // Input file
-		"-c:v", "h264_nvenc", // Use NVIDIA GPU encoder (NVENC)
-		"-preset", "fast", // Encoding preset (fast, medium, slow)
-		"-b:v", "2M", // Video bitrate
-		"-c:a", "aac", // Audio codec
-		"-b:a", "128k", // Audio bitrate
-		outputPath, // Output file
+		"-y",
+		"-i", inputPath,
+		"-c:v", "h264_nvenc",
+		"-preset", "fast",
+		"-b:v", "2M",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		outputPath,
 	)
 
-	// Capture output for logging
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -209,11 +227,135 @@ func compressVideo(jobID, inputPath string) {
 		return
 	}
 
-	log.Printf("GPU compression completed successfully for job %s", jobID)
+	compressedMetrics, err := getVideoMetrics(outputPath)
+	if err != nil {
+		log.Printf("Failed to get compressed video metrics for job %s: %v", jobID, err)
+		setJobStatus(jobID, "failed")
+		return
+	}
+
+	compressionRatio := 0.0
+	if originalMetrics.Size > 0 {
+		compressionRatio = float64(originalMetrics.Size-compressedMetrics.Size) / float64(originalMetrics.Size) * 100
+	}
+
+	processingTime := time.Since(startTime)
+
+	metrics := &ComparisonMetrics{
+		Original:         *originalMetrics,
+		Compressed:       *compressedMetrics,
+		CompressionRatio: fmt.Sprintf("%.2f", compressionRatio),
+		ProcessingTime:   fmt.Sprintf("%.2fs", processingTime.Seconds()),
+	}
+	setJobMetrics(jobID, metrics)
+
+	log.Printf("GPU compression completed successfully for job %s (%.2f%% reduction, %s)",
+		jobID, compressionRatio, processingTime)
 	setJobStatus(jobID, "complete")
 }
 
-// Thread-safe job status getters/setters
+func getVideoMetrics(filePath string) (*VideoMetrics, error) {
+
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file info: %v", err)
+	}
+
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "quiet",
+		"-print_format", "json",
+		"-show_format",
+		"-show_streams",
+		filePath,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("ffprobe failed: %v", err)
+	}
+
+	var probeData struct {
+		Streams []struct {
+			CodecType    string `json:"codec_type"`
+			CodecName    string `json:"codec_name"`
+			Width        int    `json:"width"`
+			Height       int    `json:"height"`
+			RFrameRate   string `json:"r_frame_rate"`
+			AvgFrameRate string `json:"avg_frame_rate"`
+			BitRate      string `json:"bit_rate"`
+			PixFmt       string `json:"pix_fmt"`
+			ColorSpace   string `json:"color_space"`
+		} `json:"streams"`
+		Format struct {
+			Duration string            `json:"duration"`
+			BitRate  string            `json:"bit_rate"`
+			Tags     map[string]string `json:"tags"`
+		} `json:"format"`
+	}
+
+	if err := json.Unmarshal(output, &probeData); err != nil {
+		return nil, fmt.Errorf("failed to parse ffprobe output: %v", err)
+	}
+
+	metrics := &VideoMetrics{
+		Size:     fileInfo.Size(),
+		Metadata: make(map[string]string),
+	}
+
+	if duration, err := strconv.ParseFloat(probeData.Format.Duration, 64); err == nil {
+		metrics.Duration = duration
+	}
+
+	if bitrate, err := strconv.ParseInt(probeData.Format.BitRate, 10, 64); err == nil {
+		metrics.Bitrate = bitrate
+	}
+
+	for key, value := range probeData.Format.Tags {
+		metrics.Metadata[key] = value
+	}
+
+	for _, stream := range probeData.Streams {
+		if stream.CodecType == "video" {
+			metrics.Width = stream.Width
+			metrics.Height = stream.Height
+			metrics.VideoCodec = stream.CodecName
+			metrics.PixelFormat = stream.PixFmt
+			metrics.ColorSpace = stream.ColorSpace
+
+			if stream.AvgFrameRate != "" {
+				metrics.FrameRate = parseFrameRate(stream.AvgFrameRate)
+			} else if stream.RFrameRate != "" {
+				metrics.FrameRate = parseFrameRate(stream.RFrameRate)
+			}
+
+			if bitrate, err := strconv.ParseInt(stream.BitRate, 10, 64); err == nil {
+				metrics.VideoBitrate = bitrate
+			}
+		} else if stream.CodecType == "audio" {
+			metrics.AudioCodec = stream.CodecName
+
+			if bitrate, err := strconv.ParseInt(stream.BitRate, 10, 64); err == nil {
+				metrics.AudioBitrate = bitrate
+			}
+		}
+	}
+
+	return metrics, nil
+}
+
+func parseFrameRate(frameRate string) string {
+	parts := strings.Split(frameRate, "/")
+	if len(parts) == 2 {
+		num, err1 := strconv.ParseFloat(parts[0], 64)
+		den, err2 := strconv.ParseFloat(parts[1], 64)
+		if err1 == nil && err2 == nil && den != 0 {
+			return fmt.Sprintf("%.2f", num/den)
+		}
+	}
+	return frameRate
+}
+
 func setJobStatus(jobID, status string) {
 	jobMutex.Lock()
 	defer jobMutex.Unlock()
@@ -224,4 +366,16 @@ func getJobStatus(jobID string) string {
 	jobMutex.RLock()
 	defer jobMutex.RUnlock()
 	return jobStatus[jobID]
+}
+
+func setJobMetrics(jobID string, metrics *ComparisonMetrics) {
+	jobMutex.Lock()
+	defer jobMutex.Unlock()
+	jobMetrics[jobID] = metrics
+}
+
+func getJobMetrics(jobID string) *ComparisonMetrics {
+	jobMutex.RLock()
+	defer jobMutex.RUnlock()
+	return jobMetrics[jobID]
 }

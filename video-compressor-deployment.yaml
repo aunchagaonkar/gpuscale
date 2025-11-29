@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: video-compressor-main
-        image: "docker.io/aunchagaonkar/video-compressor"
+        image: "docker.io/aunchagaonkar/video-compressor:v2"
         ports:
         - containerPort: 8080
         env:
