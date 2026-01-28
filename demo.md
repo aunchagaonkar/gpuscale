@@ -973,13 +973,13 @@ kubectl rollout restart deployment video-compressor
 
 Ensure you have these files in your workspace:
 
-- ✅ `time-slicing.yaml` - GPU time-slicing configuration
-- ✅ `dcgm-exporter.yaml` - GPU metrics collector
-- ✅ `kube-prometheus-stack-values.yaml` - Prometheus configuration
-- ✅ `video-compressor-deployment.yaml` - Application deployment
-- ✅ `video-compressor-prometheusrule.yaml` - Custom metric definition
-- ✅ `prometheus-adapter-values.yaml` - Metrics adapter configuration
-- ✅ `video-compressor-hpa.yaml` - Autoscaler configuration
+- `time-slicing.yaml` - GPU time-slicing configuration
+- `dcgm-exporter.yaml` - GPU metrics collector
+- `kube-prometheus-stack-values.yaml` - Prometheus configuration
+- `video-compressor-deployment.yaml` - Application deployment
+- `video-compressor-prometheusrule.yaml` - Custom metric definition
+- `prometheus-adapter-values.yaml` - Metrics adapter configuration
+- `video-compressor-hpa.yaml` - Autoscaler configuration
 
 ---
 
